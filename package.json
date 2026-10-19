@@ -1,0 +1,22 @@
+{
+  "name": "mac-management-system",
+  "version": "1.0.0",
+  "description": "Armoury Crate-like performance orchestration for macOS",
+  "private": true,
+  "scripts": {
+    "postinstall": "npm install concurrently",
+    "build:daemon": "mkdir -p build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Release && make -j$(sysctl -n hw.ncpu)",
+    "build:ui": "cd ui && npm install && npm run build",
+    "build:all": "npm run build:daemon && npm run build:ui",
+    "start:daemon": "sudo ./build/core-engine/MacMSD",
+    "start:ui": "cd ui && npm run dev",
+    "dev": "concurrently -k -n \"DAEMON,UI\" -c \"bgBlue.bold,bgMagenta.bold\" \"npm run start:daemon\" \"npm run start:ui\"",
+    "clean": "rm -rf build && cd ui && rm -rf node_modules dist"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

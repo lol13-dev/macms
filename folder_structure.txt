@@ -1,0 +1,39 @@
+mac-management-system/
+├── CMakeLists.txt                  # Root C++ build configuration
+├── package.json                    # Workspace launcher
+│
+├── core-engine/                    # C++20 Backend Daemon (MacMSD)
+│   ├── CMakeLists.txt
+│   ├── include/
+│   │   ├── system/
+│   │   │   ├── smc_controller.hpp  # Intel SMC read/write primitives
+│   │   │   ├── thermal_monitor.hpp # Multi-sensor thermal monitoring
+│   │   │   └── profile_manager.hpp # Power profiles (Silent/Normal/Perf/Max)
+│   │   ├── timer/
+│   │   │   └── session_tracker.hpp # Smart 3-4hr continuous load timer
+│   │   └── ipc/
+│   │       └── websocket_server.hpp# Lightweight WebSocket daemon
+│   └── src/
+│       ├── main.cpp                # Daemon main entry point
+│       ├── system/
+│       │   ├── smc_controller.cpp
+│       │   ├── thermal_monitor.cpp
+│       │   └── profile_manager.cpp
+│       ├── timer/
+│       │   └── session_tracker.cpp
+│       └── ipc/
+│           └── websocket_server.cpp
+│
+└── ui/                             # Isolated React UI Workspace
+    ├── package.json                # Vite + React setup
+    ├── vite.config.js
+    ├── index.html
+    └── src/
+        ├── main.jsx
+        ├── App.jsx                 # Blueprint dashboard container
+        ├── components/
+        │   ├── BlueprintBoard.jsx  # Logic board schematic overlay
+        │   ├── ProfileSelector.jsx # Power state controls
+        │   └── ThermalGauge.jsx    # Live CPU/GPU gauges
+        └── hooks/
+            └── useDaemon.js        # C++ WebSocket communication hook

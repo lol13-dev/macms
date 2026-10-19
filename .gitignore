@@ -1,0 +1,15 @@
+# C++ Build Artifacts.
+build/
+core-engine/build/
+compile_commands.json
+
+# React/Node Dependencies.
+node_modules/
+ui/node_modules/
+ui/dist/
+
+# macOS System Files
+.DS_Store
+
+# IDE Settings
+.vscode/
