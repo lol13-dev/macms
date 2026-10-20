@@ -39,6 +39,11 @@ int main() {
     macms::ipc::WebSocketDaemon wsDaemon(thermal, profile, tracker);
 
     // Step 3: START IPC Bridge.
+    if (!wsDaemon.start(8080)) {
+        std::cerr << "[MacMSD] FATAL: Failed to start WebSocket daemon on port 8080!\n";
+        return 1;
+    }
+    
     std::cout << "[MacMSDα] Daemon running natively. Press Ctrl + C to TERMINATE.\n";
 
     // Step 4: ULTRA-LOW Overhead Main Loop (1 Tick Per Second)

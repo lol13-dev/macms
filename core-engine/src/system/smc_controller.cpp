@@ -1,4 +1,4 @@
-// folder location: core-engine/src/system/smc_controller.cpp
+// core-engine/src/system/smc_controller.cpp
 #include "system/smc_controller.hpp"
 #include <iostream>
 #include <cstring>
@@ -11,18 +11,41 @@ constexpr uint8_t kSMCReadKey       = 5;
 constexpr uint8_t kSMCWriteKey      = 6;
 constexpr uint8_t kSMCGetKeyInfo    = 9;
 
-struct SMCParamStruct {
-    SMCKey key;
-    SMCKey vers;
-    uint8_t pLimitData;
-    uint8_t keyInfo[6];
-    uint8_t padding;
-    uint8_t result;
-    uint8_t status;
-    uint8_t data8;
-    uint32_t data32;
-    SmcKeyData bytes;
-};
+// macOS Kernel Memory Map for SMC Communication (Strict 80-byte alignment)
+typedef struct {
+    char                  major;
+    char                  minor;
+    char                  build;
+    char                  reserved[1];
+    uint16_t              release;
+} SMCKeyData_vers_t;
+
+typedef struct {
+    uint16_t              version;
+    uint16_t              length;
+    uint32_t              cpuPLimit;
+    uint32_t              gpuPLimit;
+    uint32_t              memPLimit;
+} SMCKeyData_pLimitData_t;
+
+typedef struct {
+    uint32_t              dataSize;
+    uint32_t              dataType;
+    char                  dataAttributes;
+} SMCKeyData_keyInfo_t;
+
+typedef struct {
+    uint32_t                  key;
+    SMCKeyData_vers_t         vers;
+    SMCKeyData_pLimitData_t   pLimitData;
+    SMCKeyData_keyInfo_t      keyInfo;
+    char                      result;
+    char                      status;
+    char                      data8;
+    uint32_t                  data32;
+    uint8_t                   bytes[32];
+} AppleSMCParamStruct;
+
 
 SmcController::SmcController() {
     connect();
@@ -70,15 +93,23 @@ SMCKey SmcController::makeKey(std::string_view str) {
 bool SmcController::callSmc(uint8_t command, const SMCKey& key, const SmcKeyData& input, SmcKeyData& output) {
     if (connection_ == 0) return false;
 
-    SMCParamStruct inputStruct{};
-    SMCParamStruct outputStruct{};
+    AppleSMCParamStruct inputStruct{};
+    AppleSMCParamStruct outputStruct{};
 
-    inputStruct.key = key;
+    // Convert the 4-char array key into a 32-bit unsigned integer for the kernel
+    uint32_t uintKey = (static_cast<uint8_t>(key[0]) << 24) |
+                       (static_cast<uint8_t>(key[1]) << 16) |
+                       (static_cast<uint8_t>(key[2]) << 8)  |
+                       (static_cast<uint8_t>(key[3]));
+
+    inputStruct.key = uintKey;
     inputStruct.data8 = command;
-    inputStruct.bytes = input;
+    inputStruct.keyInfo.dataSize = input.dataSize;
+    inputStruct.keyInfo.dataType = input.dataType;
+    std::memcpy(inputStruct.bytes, input.bytes, 32);
 
-    size_t inputSize = sizeof(SMCParamStruct);
-    size_t outputSize = sizeof(SMCParamStruct);
+    size_t inputSize = sizeof(AppleSMCParamStruct);
+    size_t outputSize = sizeof(AppleSMCParamStruct);
 
     kern_return_t result = IOConnectCallStructMethod(
         connection_,
@@ -87,8 +118,11 @@ bool SmcController::callSmc(uint8_t command, const SMCKey& key, const SmcKeyData
         &outputStruct, &outputSize
     );
 
+    // Ensure kernel success and that AppleSMC didn't return a soft error in the result field
     if (result == kIOReturnSuccess && outputStruct.result == 0) {
-        output = outputStruct.bytes;
+        output.dataSize = outputStruct.keyInfo.dataSize;
+        output.dataType = outputStruct.keyInfo.dataType;
+        std::memcpy(output.bytes, outputStruct.bytes, 32);
         return true;
     }
     return false;
@@ -98,7 +132,6 @@ std::optional<SmcKeyData> SmcController::readKey(std::string_view keyName) {
     SMCKey key = makeKey(keyName);
     SmcKeyData input{}, output{};
 
-    // input.data8 = kSMCGetKeyInfo;
     if (!callSmc(kSMCGetKeyInfo, key, input, output)) return std::nullopt;
 
     input.dataSize = output.dataSize;

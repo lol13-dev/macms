@@ -2,6 +2,7 @@
 build/
 core-engine/build/
 compile_commands.json
+# DISABLED DUE TO FALSE ERROR
 
 # React/Node Dependencies.
 node_modules/

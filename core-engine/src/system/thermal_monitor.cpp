@@ -1,5 +1,6 @@
-// folder location: core-engine/src/system/thermal_monitor.cpp
+// core-engine/src/system/thermal_monitor.cpp
 #include "system/thermal_monitor.hpp"
+#include <iostream>
 
 namespace macms::system {
 
@@ -13,18 +14,23 @@ std::optional<ThermalData> ThermalMonitor::getSystemThermals() {
     auto fanLeftOpt = smc_.getFanSpeed(0); // Left Fan
     auto fanRightOpt = smc_.getFanSpeed(1); // Right Fan
 
-    if (!cpuOpt || !fanLeftOpt) return std::nullopt;
+    // Log exactly which sensors are failing on this specific logic board
+    if (!cpuOpt) std::cerr << "[ThermalMonitor] SMC Read Failed: CPU Temp (TC0F)\n";
+    if (!gpuOpt) std::cerr << "[ThermalMonitor] SMC Read Failed: GPU Temp (TG0D)\n";
+    if (!fanLeftOpt) std::cerr << "[ThermalMonitor] SMC Read Failed: Left Fan (F0Ac)\n";
+    if (!fanRightOpt) std::cerr << "[ThermalMonitor] SMC Read Failed: Right Fan (F1Ac)\n";
 
-    data.cpuTemp = *cpuOpt;
-    data.gpuTemp = gpuOpt.value_or(0.0); // FALLBACK if no dedicated GPU exists
-    data.fanLeftRpm = *fanLeftOpt;
-    data.fanRightRpm = fanRightOpt.value_or(0); 
+    // Fault tolerance: Send default 0s for broken sensors instead of aborting
+    // This guarantees the JSON payload is sent and unlocks the React UI.
+    data.cpuTemp = cpuOpt.value_or(0.0);
+    data.gpuTemp = gpuOpt.value_or(0.0);
+    data.fanLeftRpm = fanLeftOpt.value_or(0);
+    data.fanRightRpm = fanRightOpt.value_or(0);
 
-    return data;
+    return data; 
 }
 
 std::optional<double> ThermalMonitor::getGpuTemperature() {
-    // NOTE: TG0D is typically the GPU Die sensor on Intel MacBooks (like the A1707)
     auto data = smc_.readKey("TG0D"); 
     if (!data) return std::nullopt;
     
@@ -32,4 +38,4 @@ std::optional<double> ThermalMonitor::getGpuTemperature() {
     return val / 256.0;
 }
 
-} // end of namespace macms::system
+} // namespace macms::system

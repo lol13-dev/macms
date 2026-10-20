@@ -1,4 +1,4 @@
-// folder location: core-engine/src/ipc/websocket_server.cpp
+// core-engine/src/ipc/websocket_server.cpp
 #include "ipc/websocket_server.hpp"
 #include <iostream>
 
@@ -17,43 +17,53 @@ bool WebSocketDaemon::start(int port) {
     if (isRunning_) return true;
 
     ix::initNetSystem();
+    server_ = std::make_unique<ix::WebSocketServer>(port, "127.0.0.1");
     
-    // Bind directly to localhost so external network devices cannot manipulate your hardware
-    server_ = ix::WebSocketServer(port, "127.0.0.1");
-    
-    server_.setOnConnectionCallback([this](std::shared_ptr<ix::ConnectionState> connectionState, 
-                                           ix::WebSocket& webSocket, 
-                                           const ix::WebSocketMessagePtr& msg) {
-        handleMessage(connectionState, webSocket, msg);
+    // Explicitly bind the message listener to the connection event
+    server_->setOnConnectionCallback([this](std::weak_ptr<ix::WebSocket> webSocket, 
+                                            std::shared_ptr<ix::ConnectionState> connectionState) {
+        auto ws = webSocket.lock();
+        if (ws) {
+            std::cout << "\n[MacMSD] >>> React UI Connected! (" << connectionState->getRemoteIp() << ")\n";
+            
+            ws->setOnMessageCallback([this](const ix::WebSocketMessagePtr& msg) {
+                if (msg->type == ix::WebSocketMessageType::Message) {
+                    std::cout << "[MacMSD] >>> INCOMING CLICK FROM UI: " << msg->str << "\n";
+                    handleMessage(msg);
+                }
+                else if (msg->type == ix::WebSocketMessageType::Error) {
+                    std::cerr << "[MacMSD] WebSocket Error: " << msg->errorInfo.reason << "\n";
+                }
+            });
+        }
     });
 
-    auto res = server_.listen();
+    auto res = server_->listen();
     if (!res.first) {
-        std::cerr << "[WebSocket] Failed to bind to port " << port << " - " << res.second << "\n";
+        std::cerr << "[MacMSD] FATAL: Failed to bind to port " << port << " - " << res.second << "\n";
         return false;
     }
 
-    server_.start();
+    server_->start();
     isRunning_ = true;
-    std::cout << "[WebSocket] IPC Server running on ws://127.0.0.1:" << port << "\n";
+    std::cout << "[MacMSD] IPC Server running on ws://127.0.0.1:" << port << "\n";
     return true;
 }
 
 void WebSocketDaemon::stop() {
     if (isRunning_) {
-        server_.stop();
+        if (server_) server_->stop();
         ix::uninitNetSystem();
         isRunning_ = false;
     }
 }
 
 void WebSocketDaemon::broadcastMetrics() {
-    if (!isRunning_ || server_.getClients().empty()) return;
+    if (!isRunning_ || !server_ || server_->getClients().empty()) return;
 
     auto thermals = thermal_.getSystemThermals();
     if (!thermals) return;
 
-    // Pack all our C++ data into a lightweight JSON payload for React
     nlohmann::json payload = {
         {"type", "metrics"},
         {"data", {
@@ -68,28 +78,25 @@ void WebSocketDaemon::broadcastMetrics() {
     };
 
     std::string msg = payload.dump();
-    for (auto client : server_.getClients()) {
+    for (auto client : server_->getClients()) {
         client->sendText(msg);
     }
 }
 
-void WebSocketDaemon::handleMessage(std::shared_ptr<ix::ConnectionState> /*connectionState*/, 
-                                    ix::WebSocket& webSocket, 
-                                    const ix::WebSocketMessagePtr& msg) {
-    if (msg->type == ix::WebSocketMessageType::Message) {
-        try {
-            auto json = nlohmann::json::parse(msg->str);
-            if (json["type"] == "setProfile") {
-                std::string p = json["profile"];
-                if (p == "Silent") profile_.setProfile(system::PowerProfile::Silent);
-                else if (p == "Normal") profile_.setProfile(system::PowerProfile::Normal);
-                else if (p == "Performance") profile_.setProfile(system::PowerProfile::Performance);
-                // We assume UI has logic to check if AC is connected before sending Maximum
-                else if (p == "Maximum") profile_.setProfile(system::PowerProfile::Maximum, true); 
-            }
-        } catch (...) {
-            // Silently swallow bad JSON so a UI glitch cannot crash the system daemon
+void WebSocketDaemon::handleMessage(const ix::WebSocketMessagePtr& msg) {
+    try {
+        auto json = nlohmann::json::parse(msg->str);
+        if (json["type"] == "setProfile") {
+            std::string p = json["profile"];
+            std::cout << "[MacMSD] >>> Executing hardware profile switch to: " << p << "\n";
+            
+            if (p == "Silent") profile_.setProfile(system::PowerProfile::Silent);
+            else if (p == "Normal") profile_.setProfile(system::PowerProfile::Normal);
+            else if (p == "Performance") profile_.setProfile(system::PowerProfile::Performance);
+            else if (p == "Maximum") profile_.setProfile(system::PowerProfile::Maximum, true); 
         }
+    } catch (const std::exception& e) {
+        std::cerr << "[MacMSD] >>> FATAL JSON ERROR: " << e.what() << "\n";
     }
 }
 

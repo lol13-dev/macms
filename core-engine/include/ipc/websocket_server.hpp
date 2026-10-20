@@ -34,11 +34,16 @@ private:
     system::ProfileManager& profile_;
     timer::SessionTracker& tracker_;
     
-    ix::WebSocketServer server_;
+    // ix::WebSocketServer server_;
+    // std::atomic<bool> isRunning_{false};
+    // FIXED: I use a unique_ptr to AVOID atomic copy-assignment restrictions.
+    std::unique_ptr<ix::WebSocketServer> server_;
     std::atomic<bool> isRunning_{false};
 
     // CALLBACK to handle incoming profile changes from the React UI.
-    void handleMessage(std::shared_ptr<ix::ConnectionState> connectionState, ix::WebSocket& webSocket, const ix::WebSocketMessagePtr& msg);
+    // void handleMessage(std::shared_ptr<ix::ConnectionState> connectionState, ix::WebSocket& webSocket, const ix::WebSocketMessagePtr& msg);
+    // FIXED: SIMPLIFIED signature for processing incoming JSON.
+    void handleMessage(const ix::WebSocketMessagePtr& msg);
 };
 
 } // end of namespace macms::ipc
