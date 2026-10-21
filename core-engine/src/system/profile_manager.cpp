@@ -4,22 +4,26 @@
 
 namespace macms::system {
 
-ProfileManager::ProfileManager(SmcController& smc, ThermalMonitor& thermal)
-    : smc_(smc), thermal_(thermal) {}
+ProfileManager::ProfileManager(SmcController& smc, ThermalMonitor& thermal, PowerMonitor& power)
+    : smc_(smc), thermal_(thermal), power_(power) {}
 
-bool ProfileManager::setProfile(PowerProfile profile, bool isCharging) {
-    // Safety lock: Prevent Maximum mode from draining the battery and overheating
-    if (profile == PowerProfile::Maximum && !isCharging) {
+bool ProfileManager::setProfile(PowerProfile profile, bool /*isCharging*/) {
+    // NEW, Safety lock: Prevent Maximum mode from draining the battery and overheating
+    if (profile == PowerProfile::Maximum && !power_.isOnACPower()) {
         std::cerr << "[ProfileManager_WARNING] Cannot engage Maximum profile while on battery power.\n";
         return false;
     }
-    
+
     currentProfile_ = profile;
     std::cout << "[ProfileManager] Profile switched to: " << getProfileName() << "\n";
-    
+
     // Immediately apply the new fan rules
     enforceProfileRules();
     return true;
+}
+
+bool ProfileManager::isOnACPower() const {
+    return power_.isOnACPower();
 }
 
 PowerProfile ProfileManager::getCurrentProfile() const {
@@ -40,10 +44,9 @@ void ProfileManager::enforceProfileRules() {
     auto thermals = thermal_.getSystemThermals();
     if (!thermals) return;
 
-    // Armoury Crate logic for dual-fan setups (Max RPM ~5900 on MacBook Pro 15")
+    // setFanSpeed() switches the fan to manual mode itself and logs any SMC failure.
     switch (currentProfile_) {
         case PowerProfile::Silent:
-            // Cap fan speed low to prioritize silence over thermals
             if (thermals->cpuTemp < 75.0) {
                 smc_.setFanSpeed(0, 2000);
                 smc_.setFanSpeed(1, 2000);
@@ -52,23 +55,27 @@ void ProfileManager::enforceProfileRules() {
                 smc_.setFanSpeed(1, 3200);
             }
             break;
-            
+
         case PowerProfile::Normal:
-            // Setting target to 0 releases manual override and returns control to macOS
-            smc_.setFanSpeed(0, 0); 
-            smc_.setFanSpeed(1, 0);
+            // FIXED: writing 0 to the target does NOT release control.
+            // Switch the fans back to AUTOMATIC mode so macOS drives them again.
+            smc_.releaseFanControl(0);
+            smc_.releaseFanControl(1);
             break;
-            
+
         case PowerProfile::Performance:
-            // High baseline RPM to prevent thermal throttling under sustained load
             if (thermals->cpuTemp > 60.0) {
                 smc_.setFanSpeed(0, 4800);
                 smc_.setFanSpeed(1, 4800);
+            } else {
+                // FIXED: below the threshold, give control back instead of
+                // leaving the previous profile's RPM stuck on the fans.
+                smc_.releaseFanControl(0);
+                smc_.releaseFanControl(1);
             }
             break;
 
         case PowerProfile::Maximum:
-            // 100% RPM regardless of temperature
             smc_.setFanSpeed(0, 5900);
             smc_.setFanSpeed(1, 5900);
             break;

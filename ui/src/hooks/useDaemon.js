@@ -1,68 +1,72 @@
-// folder location: ui/src/hooks/useDaemon.js
-import { useState, useEffect, useRef, useCallback } from 'react';
+// ui/src/hooks/useDaemon.js
+import { useEffect, useRef, useState, useCallback } from 'react';
 
-export function useDaemon(url = 'ws://127.0.0.1:8080') {
-    const [isConnected, setIsConnected] = useState(false);
-    const [metrics, setMetrics] = useState(null);
-    const wsRef = useRef(null);
+const WS_URL = 'ws://127.0.0.1:8080';
 
-    useEffect(() => {
-        let reconnectTimer;
+export function useDaemon() {
+  const wsRef = useRef(null);
+  const [isConnected, setIsConnected] = useState(false);
+  const [metrics, setMetrics] = useState(null);
 
-        const connect = () => {
-            const ws = new WebSocket(url);
-            wsRef.current = ws;
+  useEffect(() => {
+    // Each effect run gets its own flags, so React.StrictMode's
+    // mount -> unmount -> mount cycle can't mix up two sockets.
+    let cancelled = false;
+    let retryTimer = null;
 
-            ws.onopen = () => {
-                setIsConnected(true);
-                console.log('[MacMS_STATUS] CONNECTED to C++ Daemon');
-            };
+    const connect = () => {
+      const ws = new WebSocket(WS_URL);
+      wsRef.current = ws;
 
-            ws.onmessage = (event) => {
-                try {
-                    const payload = JSON.parse(event.data);
-                    if (payload.type == 'metrics') {
-                        setMetrics(payload.data);
-                    }
-                } catch (err) {
-                    console.error('[MacMS_STATUS] Failed to parse payload:', err);
-                }
-            };
+      ws.onopen = () => {
+        if (wsRef.current === ws) setIsConnected(true);
+      };
 
-            ws.onclose = () => {
-                setIsConnected(false);
-                wsRef.current = null;
-
-                // CHECK every 2 sec if the daemon is BACK ONLINE.
-                reconnectTimer = setTimeout(connect, 2000);
-            };
-
-            ws.onerror = (err) => {
-                // SUPPRESS noisy ERROR logs when the daemons 
-                ws.close();
-            };
-        };
-
-        connect();
-
-        return () => {
-            clearTimeout(reconnectTimer);
-            if (wsRef.current) {
-                wsRef.current.close();
-            }
-        };
-    }, [url]);
-
-    const setProfile = useCallback((profilename) => {
-        if (wsRef.current && wsRef.current.readyState === webSocket.OPEN) {
-            wsRef.current.send(JSON.stringify ({
-                type: 'setProfile',
-                profile: profileName
-            }));
-        } else {
-            console.warn('[MacMS_NOTE] Cannot change profile. Daemon is disconnected.')
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'metrics') setMetrics(msg.data);
+        } catch (err) {
+          console.error('[useDaemon] Bad JSON from daemon:', err);
         }
-    }, []);
+      };
 
-    return { isConnected, metrics, setProfile };
+      ws.onclose = () => {
+        // Only react if this is still the *current* socket.
+        if (wsRef.current === ws) {
+          wsRef.current = null;
+          setIsConnected(false);
+        }
+        if (!cancelled) retryTimer = setTimeout(connect, 2000);
+      };
+
+      ws.onerror = () => ws.close();
+    };
+
+    connect();
+
+    return () => {
+      cancelled = true;
+      clearTimeout(retryTimer);
+      const ws = wsRef.current;
+      wsRef.current = null;
+      if (ws) ws.close();
+      setIsConnected(false);
+    };
+  }, []);
+
+  const setProfile = useCallback((profile) => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      console.warn('[useDaemon] Socket not open, cannot send profile:', profile);
+      return;
+    }
+    // Must match handleMessage() in websocket_server.cpp exactly:
+    // json["type"] == "setProfile" and json["profile"] is a string.
+    const payload = JSON.stringify({ type: 'setProfile', profile });
+    console.log('[useDaemon] sending', payload);
+    ws.send(payload);
+  }, []);
+
+  return { isConnected, metrics, setProfile };
 }

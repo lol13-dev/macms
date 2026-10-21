@@ -3,6 +3,8 @@
 
 #include "system/smc_controller.hpp"
 #include "system/thermal_monitor.hpp"
+#include "system/power_monitor.hpp"
+#include <atomic>
 #include <string>
 
 namespace macms::system {
@@ -18,7 +20,7 @@ enum class PowerProfile {
 class ProfileManager {
 public:
     // Special Constructor.
-    ProfileManager(SmcController& smc, ThermalMonitor& thermal);
+    ProfileManager(SmcController& smc, ThermalMonitor& thermal, PowerMonitor& power);
 
     // Special Destructor.
     ~ProfileManager() = default;
@@ -26,11 +28,14 @@ public:
     ProfileManager(const ProfileManager&) = delete;
     ProfileManager& operator=(const ProfileManager&) = delete;
 
-    // ATTEMPTS to switch the PROFILE. MAXIMUM MODE should only succeed if isCharging == TRUE
+    // ATTEMPTS to switch the PROFILE.
     bool setProfile(PowerProfile profile, bool isCharging = false);
 
     PowerProfile getCurrentProfile() const;
     std::string getProfileName() const;
+
+    // USED by the UI payload so the frontend can LOCK the maximum button on Battery.
+    bool isOnACPower() const;
 
     // THIS WILL BE CALLED periodically in the main LOOP to dynamically adjust
     // hardware targets BASED on the active profile's rules.
@@ -39,7 +44,10 @@ public:
 private:
     SmcController& smc_;
     ThermalMonitor& thermal_;
-    PowerProfile currentProfile_{PowerProfile::Normal};
+    PowerMonitor& power_;
+
+    // WRITTEN by the WebSocket thread AND the main loop thread, SO IT MUST BE atomic.
+    std::atomic<PowerProfile> currentProfile_{PowerProfile::Normal};
 };
 
 } // end of namespace macms::system 

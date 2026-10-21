@@ -73,7 +73,8 @@ void WebSocketDaemon::broadcastMetrics() {
             {"fanRightRpm", thermals->fanRightRpm},
             {"profile", profile_.getProfileName()},
             {"sessionActive", tracker_.isSessionActive()},
-            {"sessionDurationMin", tracker_.getActiveDurationMinutes()}
+            {"sessionDurationMin", tracker_.getActiveDurationMinutes()},
+            {"onACPower", profile_.isOnACPower()}
         }}
     };
 
@@ -93,7 +94,7 @@ void WebSocketDaemon::handleMessage(const ix::WebSocketMessagePtr& msg) {
             if (p == "Silent") profile_.setProfile(system::PowerProfile::Silent);
             else if (p == "Normal") profile_.setProfile(system::PowerProfile::Normal);
             else if (p == "Performance") profile_.setProfile(system::PowerProfile::Performance);
-            else if (p == "Maximum") profile_.setProfile(system::PowerProfile::Maximum, true); 
+            else if (p == "Maximum") profile_.setProfile(system::PowerProfile::Maximum); // [!] ,true deleted.
         }
     } catch (const std::exception& e) {
         std::cerr << "[MacMSD] >>> FATAL JSON ERROR: " << e.what() << "\n";

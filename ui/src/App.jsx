@@ -4,9 +4,10 @@ import { useDaemon } from './hooks/useDaemon';
 
 export default function App() {
   const { isConnected, metrics, setProfile } = useDaemon();
-
-  // Fallback to 'Unknown' if the daemon hasn't sent data yet
   const activeProfile = metrics?.profile || 'Unknown';
+  
+  // [+] Extract power status from the C++ metrics payload. Default to false if missing.
+  const isPluggedIn = metrics?.onACPower ?? false; 
 
   return (
     <div style={{ padding: '2rem', maxWidth: '600px', margin: '0 auto', fontFamily: 'sans-serif' }}>
@@ -15,6 +16,10 @@ export default function App() {
         <p style={{ margin: '0.5rem 0 0 0', color: '#888' }}>
           IPC Link: <span style={{ color: isConnected ? '#00ff00' : '#ff4444', fontWeight: 'bold' }}>
             {isConnected ? 'ONLINE' : 'OFFLINE'}
+          </span>
+          {/* [+] Added a visual Power status indicator to the UI header */}
+          {' '} | Power: <span style={{ color: isPluggedIn ? '#00ff00' : '#ffaa00', fontWeight: 'bold' }}>
+            {isPluggedIn ? 'AC ADAPTER' : 'BATTERY'}
           </span>
         </p>
       </header>
@@ -53,29 +58,33 @@ export default function App() {
           <div style={{ display: 'flex', gap: '10px', marginTop: '1rem' }}>
             <button 
               onClick={() => setProfile('Silent')}
-              style={buttonStyle(activeProfile === 'Silent')}
+              style={buttonStyle(activeProfile === 'Silent', false, !isConnected)}
               disabled={!isConnected}
             >
               Silent
             </button>
             <button 
               onClick={() => setProfile('Normal')}
-              style={buttonStyle(activeProfile === 'Normal')}
+              style={buttonStyle(activeProfile === 'Normal', false, !isConnected)}
               disabled={!isConnected}
             >
               Normal
             </button>
             <button 
               onClick={() => setProfile('Performance')}
-              style={buttonStyle(activeProfile === 'Performance')}
+              style={buttonStyle(activeProfile === 'Performance', false, !isConnected)}
               disabled={!isConnected}
             >
               Performance
             </button>
             <button 
               onClick={() => setProfile('Maximum')}
-              style={buttonStyle(activeProfile === 'Maximum', true)}
-              disabled={!isConnected}
+              // [+] Pass the power state to the style function to visually gray it out
+              style={buttonStyle(activeProfile === 'Maximum', true, !isConnected || !isPluggedIn)}
+              // [+] Hard-disable the click action if disconnected OR on battery
+              disabled={!isConnected || !isPluggedIn}
+              // [+] Add a tooltip so the user knows why it is disabled
+              title={!isPluggedIn ? "Must be plugged into AC Power to use Maximum Mode" : ""}
             >
               Maximum
             </button>
@@ -100,16 +109,19 @@ const metricBoxStyle = {
   fontSize: '0.9rem'
 };
 
-function buttonStyle(isActive, isDanger = false) {
+// [+] Added `isDisabled` parameter to dynamically change the styling
+function buttonStyle(isActive, isDanger = false, isDisabled = false) { 
   return {
     padding: '8px 16px',
     backgroundColor: isActive ? (isDanger ? '#ff4444' : '#00d2ff') : '#2a2a2a',
     color: isActive ? '#000' : '#fff',
     border: 'none',
     borderRadius: '4px',
-    cursor: isActive ? 'default' : 'pointer',
+    // [+] Change cursor to "not-allowed" (the red circle slash) if disabled
+    cursor: isDisabled ? 'not-allowed' : (isActive ? 'default' : 'pointer'),
     fontWeight: isActive ? 'bold' : 'normal',
     transition: 'background-color 0.2s',
-    opacity: isActive ? 1 : 0.5
+    // [+] Drop the opacity heavily if disabled so it visually looks turned off
+    opacity: isDisabled ? 0.2 : (isActive ? 1 : 0.7) 
   };
 }

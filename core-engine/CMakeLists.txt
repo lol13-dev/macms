@@ -12,6 +12,7 @@ add_executable(${TARGET_NAME}
     src/system/smc_controller.cpp
     src/system/thermal_monitor.cpp
     src/system/profile_manager.cpp
+    src/system/power_monitor.cpp
     src/timer/session_tracker.cpp
     src/ipc/websocket_server.cpp
 )

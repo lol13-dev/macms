@@ -3,6 +3,7 @@
 #include "system/smc_controller.hpp"
 #include "system/thermal_monitor.hpp"
 #include "system/profile_manager.hpp"
+#include "system/power_monitor.hpp"
 #include "timer/session_tracker.hpp"
 #include "ipc/websocket_server.hpp"
 
@@ -34,7 +35,8 @@ int main() {
 
     // Step 2: INITIALIZE Managers.
     macms::system::ThermalMonitor thermal(smc);
-    macms::system::ProfileManager profile(smc, thermal);
+    macms::system::PowerMonitor power;
+    macms::system::ProfileManager profile(smc, thermal,power);
     macms::timer::SessionTracker tracker(profile);
     macms::ipc::WebSocketDaemon wsDaemon(thermal, profile, tracker);
 
@@ -48,14 +50,31 @@ int main() {
 
     // Step 4: ULTRA-LOW Overhead Main Loop (1 Tick Per Second)
     while (g_running) {
-        tracker.update();
-        profile.enforceProfileRules();
-        wsDaemon.broadcastMetrics();
-        
+        // [!] Failsafe WARNING: WRAP tick execution in try-catch to PREVENT hardware/IPC exceptions from CRASHING the loop.
+        try {
+            tracker.update();
+            profile.enforceProfileRules();
+            wsDaemon.broadcastMetrics();
+        } catch (const std::exception& e) {
+            // [!] Failsafe Warning: LOG hardware errors cleanly WITHOUT terminating process execution.
+            std::cerr << "[MacMSα][!] Warning: Execption caught in main loop tick: " << e.what() << "\n";
+        } catch (...) {
+            // [!] Failsafe Warning: CATCH unhandled low-level hardware exceptions.
+            std::cerr << "[MacMSDα][!] Warning: Unknown hardware caught in main loop tick.\n";
+        }
+
+        // [!] Failsafe Warning: Sleep MUST remain outside the try-catch block.
+        // IF an EXCEPTION repeats, this guarantees the daemon still sleeps 1 second per cycle,
+        // permanently preventing 100% CPU runaway and IDE lagging.
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 
     std::cout << "\n[MacMSDα] Shutting down cleanly...\n";
+
+    // [!] Failsafe Warning: Safely restore SMC fans to automatic macOS thermal management 
+    // before daemon exit so fans are never left stuck in manual RPM mode.
+    profile.setProfile(macms::system::PowerProfile::Normal);
+    
     wsDaemon.stop();
     return 0;
 }
