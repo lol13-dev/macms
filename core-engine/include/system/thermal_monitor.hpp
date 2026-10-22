@@ -11,6 +11,8 @@ struct ThermalData {
     double gpuTemp;
     int fanLeftRpm;
     int fanRightRpm;
+    double cpuPower; // [+] new struct
+    double gpuPower; // [+] new struct
 };
 
 class ThermalMonitor {

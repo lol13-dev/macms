@@ -208,9 +208,14 @@ std::optional<double> SmcController::readNumber(std::string_view keyName) {
 }
 
 std::optional<double> SmcController::getCpuTemperature() {
-    auto data = readKey("TC0F");
-    // [+] TARGET the primary CPU Diode (matches Menu Bar apps)
-    if (!data) return std::nullopt;
+    // 1. TARGET the Intel PECI Package sensor first (matches the Stats app EXACTLY)
+    auto data = readKey("TCXC");
+    if (!data) {
+        // 2. FALLBACK to the CPU Diode if PECI fails 
+        data = readKey("TC0D");
+        if (!data) return std::nullopt;
+    }
+    // 3. DECODE the SP78 formatted temperature data
     int16_t val = (data->bytes[0] << 8) | data->bytes[1];
     return val / 256.0;
 }

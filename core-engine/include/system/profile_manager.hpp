@@ -46,6 +46,10 @@ private:
     ThermalMonitor& thermal_;
     PowerMonitor& power_;
 
+    // [!!] Failsafe Watchdog State.
+    int overloadTicks_;
+    void checkEmergencyFailsafe();
+
     // WRITTEN by the WebSocket thread AND the main loop thread, SO IT MUST BE atomic.
     std::atomic<PowerProfile> currentProfile_{PowerProfile::Normal};
 };
