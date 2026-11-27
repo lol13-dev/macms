@@ -8,13 +8,32 @@
 
 namespace macms::system {
 
+// [ADD] These command values identify the SMC operation sent to the platform driver.
+constexpr uint8_t kSMCReadKey    = 5;
+constexpr uint8_t kSMCWriteKey   = 6;
+constexpr uint8_t kSMCGetKeyInfo = 9;
+
+#ifdef __APPLE__
+// [NOTE] macOS sends SMC commands through IOKit using a user-client method number.
 constexpr uint8_t kSMCUserClientCmd = 2;
-constexpr uint8_t kSMCReadKey       = 5;
-constexpr uint8_t kSMCWriteKey      = 6;
-constexpr uint8_t kSMCGetKeyInfo    = 9;
+#elif defined(_WIN32)
+// [NOTE] Windows uses Win32 device I/O control codes instead of IOKit calls.
+constexpr DWORD kWinIoctlReadKey  = 0x220000;
+constexpr DWORD kWinIoctlWriteKey = 0x220004;
+
+#pragma pack(push, 1)
+// [ADD] The four-character key and byte payload are packed exactly for the AppleSMC Win32 driver.
+struct WinSmcRequest {
+    uint32_t key;
+    uint8_t  dataSize;
+    uint8_t  data[32];
+};
+#pragma pack(pop)
+#endif
 
 namespace {
 
+// [ADD] Builds the 32-bit FourCC value used by Apple SMC data types from four characters.
 constexpr uint32_t fourCC(const char (&s)[5]) {
     return (static_cast<uint32_t>(static_cast<uint8_t>(s[0])) << 24) |
            (static_cast<uint32_t>(static_cast<uint8_t>(s[1])) << 16) |
@@ -29,11 +48,13 @@ constexpr uint32_t kTypeUi16 = fourCC("ui16");
 
 // Decodes any numeric SMC value we care about, based on its REAL type.
 std::optional<double> decodeNumber(const SmcKeyData& d) {
+    // [NOTE] fpe2 represents an unsigned fixed-point value: the raw integer is divided by 4.
     if (d.dataType == kTypeFpe2 && d.dataSize >= 2) {
         uint16_t raw = (static_cast<uint16_t>(d.bytes[0]) << 8) | d.bytes[1];
         return raw / 4.0;
     }
     if (d.dataType == kTypeFlt && d.dataSize == 4) {
+        // [ADD] flt is copied into a native float so its byte representation can be decoded.
         float f;
         std::memcpy(&f, d.bytes, sizeof(f));
         return static_cast<double>(f);
@@ -42,6 +63,7 @@ std::optional<double> decodeNumber(const SmcKeyData& d) {
         return static_cast<double>(d.bytes[0]);
     }
     if (d.dataType == kTypeUi16 && d.dataSize >= 2) {
+        // [NOTE] ui16 values are encoded in big-endian byte order.
         return static_cast<double>((static_cast<uint16_t>(d.bytes[0]) << 8) | d.bytes[1]);
     }
     return std::nullopt;
@@ -49,7 +71,9 @@ std::optional<double> decodeNumber(const SmcKeyData& d) {
 
 } // namespace
 
+#ifdef __APPLE__
 // macOS Kernel Memory Map for SMC Communication (Strict 80-byte alignment)
+// [ADD] These structs mirror the Apple SMC parameter layout for IOKit structured calls.
 typedef struct {
     char                  major;
     char                  minor;
@@ -83,15 +107,16 @@ typedef struct {
     uint32_t                  data32;
     uint8_t                   bytes[32];
 } AppleSMCParamStruct;
-
+#endif
 
 SmcController::SmcController() {
+    // [ADD] Construction attempts to open the AppleSMC connection immediately.
     connect();
 }
 
 SmcController::~SmcController() {
-    // SAFETY: never leave the fans pinned in manual mode when the daemon exits.
-    if (connection_ != 0) {
+    // [NOTE] Destruction safely returns each fan to automatic control before closing the connection.
+    if (isConnected()) {
         for (int i = 0; i < getFanCount(); ++i) {
             releaseFanControl(i);
         }
@@ -99,9 +124,24 @@ SmcController::~SmcController() {
     disconnect();
 }
 
+bool SmcController::isConnected() const {
+#ifdef __APPLE__
+    // [NOTE] A macOS connection is valid when its IOKit handle is nonzero.
+    return connection_ != 0;
+#elif defined(_WIN32)
+    // [NOTE] A Windows connection is valid until CreateFileA returns INVALID_HANDLE_VALUE.
+    return connection_ != INVALID_HANDLE_VALUE;
+#else
+    return false;
+#endif
+}
+
+#ifdef __APPLE__
 bool SmcController::connect() {
+    // [ADD] Avoid reopening if this controller already has an active IOKit connection.
     if (connection_ != 0) return true;
 
+    // [NOTE] IOServiceMatching finds registered services named AppleSMC.
     CFMutableDictionaryRef matchingDict = IOServiceMatching("AppleSMC");
     if (!matchingDict) return false;
 
@@ -113,6 +153,7 @@ bool SmcController::connect() {
     IOObjectRelease(iterator);
     if (device == 0) return false;
 
+    // [ADD] IOServiceOpen converts the discovered service into a user-client connection handle.
     result = IOServiceOpen(device, mach_task_self(), 0, &connection_);
     IOObjectRelease(device);
 
@@ -126,17 +167,10 @@ void SmcController::disconnect() {
     }
 }
 
-SMCKey SmcController::makeKey(std::string_view str) {
-    SMCKey key = {0, 0, 0, 0};
-    for (size_t i = 0; i < str.length() && i < 4; ++i) {
-        key[i] = str[i];
-    }
-    return key;
-}
-
 bool SmcController::callSmc(uint8_t command, const SMCKey& key, const SmcKeyData& input, SmcKeyData& output) {
     if (connection_ == 0) return false;
 
+    // [ADD] Each call builds one 80-byte AppleSMC parameter structure for IOKit.
     AppleSMCParamStruct inputStruct{};
     AppleSMCParamStruct outputStruct{};
 
@@ -147,6 +181,7 @@ bool SmcController::callSmc(uint8_t command, const SMCKey& key, const SmcKeyData
 
     inputStruct.key = uintKey;
     inputStruct.data8 = command;
+    // [NOTE] keyInfo carries the requested data size and type into or out of the SMC.
     inputStruct.keyInfo.dataSize = input.dataSize;
     inputStruct.keyInfo.dataType = input.dataType;
     std::memcpy(inputStruct.bytes, input.bytes, 32);
@@ -162,13 +197,13 @@ bool SmcController::callSmc(uint8_t command, const SMCKey& key, const SmcKeyData
     );
 
     if (result == kIOReturnSuccess && outputStruct.result == 0) {
+        // [ADD] Copy both metadata and raw bytes back to the common SmcKeyData representation.
         output.dataSize = outputStruct.keyInfo.dataSize;
         output.dataType = outputStruct.keyInfo.dataType;
         std::memcpy(output.bytes, outputStruct.bytes, 32);
         return true;
     }
 
-    // Only log WRITE failures. Failed reads are normal (a sensor may not exist on this board).
     if (command == kSMCWriteKey) {
         std::cerr << "[SMC] WRITE FAILED key='" << std::string(key.data(), 4)
                   << "' kern=0x" << std::hex << static_cast<unsigned>(result)
@@ -182,6 +217,7 @@ std::optional<SmcKeyData> SmcController::readKey(std::string_view keyName) {
     SMCKey key = makeKey(keyName);
     SmcKeyData input{}, info{}, output{};
 
+    // [NOTE] macOS first asks for key metadata, then uses that size/type for the read call.
     if (!callSmc(kSMCGetKeyInfo, key, input, info)) return std::nullopt;
 
     input.dataSize = info.dataSize;
@@ -189,54 +225,173 @@ std::optional<SmcKeyData> SmcController::readKey(std::string_view keyName) {
 
     if (!callSmc(kSMCReadKey, key, input, output)) return std::nullopt;
 
-    // The read response does not carry the key metadata, so keep what GetKeyInfo told us.
     output.dataSize = info.dataSize;
     output.dataType = info.dataType;
     return output;
 }
 
+#elif defined(_WIN32)
+bool SmcController::connect() {
+    // [ADD] The Windows AppleSMC driver is exposed as a named device file.
+    if (connection_ != INVALID_HANDLE_VALUE) return true;
+
+    connection_ = CreateFileA(
+        "\\\\.\\AppleSMC",
+        GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr
+    );
+
+    if (connection_ == INVALID_HANDLE_VALUE) {
+        std::cerr << "[SMC] Failed to open \\\\.\\AppleSMC (Win32 Error "
+                  << GetLastError() << "). Run as Admin and ensure AppleSMC is started.\n";
+        return false;
+    }
+    return true;
+}
+
+void SmcController::disconnect() {
+    if (connection_ != INVALID_HANDLE_VALUE) {
+        CloseHandle(connection_);
+        connection_ = INVALID_HANDLE_VALUE;
+    }
+}
+
+bool SmcController::callSmc(uint8_t command, const SMCKey& key, const SmcKeyData& input, SmcKeyData& output) {
+    if (connection_ == INVALID_HANDLE_VALUE) return false;
+
+    // [NOTE] The 4-byte SMC key is copied directly because it is already stored in FourCC order.
+    uint32_t rawKey = 0;
+    std::memcpy(&rawKey, key.data(), 4);
+    DWORD bytesReturned = 0;
+
+    if (command == kSMCReadKey) {
+        // [ADD] ReadKey requests 32 bytes and the result length determines the inferred SMC type.
+        WinSmcRequest req{};
+        req.key = rawKey;
+        req.dataSize = 32;
+
+        BOOL ok = DeviceIoControl(
+            connection_,
+            kWinIoctlReadKey,
+            &req, sizeof(req),
+            output.bytes, sizeof(output.bytes),
+            &bytesReturned,
+            nullptr
+        );
+
+        if (!ok || bytesReturned == 0 || bytesReturned > 32) {
+            return false;
+        }
+
+        output.dataSize = static_cast<uint32_t>(bytesReturned);
+        // [NOTE] The Windows API does not return Apple key type metadata, so size provides a reasonable type guess.
+        if (bytesReturned == 1) {
+            output.dataType = kTypeUi8;
+        } else if (bytesReturned == 2) {
+            output.dataType = kTypeFpe2;
+        } else if (bytesReturned == 4) {
+            output.dataType = kTypeFlt;
+        } else {
+            output.dataType = 0;
+        }
+        return true;
+    }
+
+    // [CHANGE] Inside SmcController::callSmc() under #elif defined(_WIN32):
+    if (command == kSMCWriteKey) {
+        if (input.dataSize == 0 || input.dataSize > 32) return false;
+
+        WinSmcRequest req{};
+        req.key = rawKey;
+        req.dataSize = static_cast<uint8_t>(input.dataSize);
+        std::memcpy(req.data, input.bytes, req.dataSize);
+
+        // [ADD] FUN_1400016c0 requires OutputBufferLength >= 1 even for WriteKey (0x220004).
+        uint8_t dummyOut[4]{0};
+        BOOL ok = DeviceIoControl(
+            connection_,
+            kWinIoctlWriteKey,
+            &req, sizeof(req),
+            dummyOut, sizeof(dummyOut),
+            &bytesReturned,
+            nullptr
+        );
+
+        if (!ok) {
+            std::cerr << "[SMC] WRITE FAILED key='" << std::string(key.data(), 4)
+                      << "' winErr=" << GetLastError() << "\n";
+        }
+        return ok != FALSE;
+    }
+
+    return false;
+}
+
+std::optional<SmcKeyData> SmcController::readKey(std::string_view keyName) {
+    // [NOTE] On Windows the read call itself supplies the bytes and inferred data type.
+    SMCKey key = makeKey(keyName);
+    SmcKeyData input{}, output{};
+    if (!callSmc(kSMCReadKey, key, input, output)) return std::nullopt;
+    return output;
+}
+#endif
+
+SMCKey SmcController::makeKey(std::string_view str) {
+    // [ADD] Four-character SMC names are converted to a fixed-size array, zero-padding unused positions.
+    SMCKey key = {0, 0, 0, 0};
+    for (size_t i = 0; i < str.length() && i < 4; ++i) {
+        key[i] = str[i];
+    }
+    return key;
+}
+
 bool SmcController::writeKey(std::string_view keyName, const SmcKeyData& data) {
+    // [NOTE] writeKey converts the name once and forwards the caller's size and bytes to callSmc.
     SMCKey key = makeKey(keyName);
     SmcKeyData output{};
     return callSmc(kSMCWriteKey, key, data, output);
 }
 
 std::optional<double> SmcController::readNumber(std::string_view keyName) {
+    // [ADD] readNumber combines the raw-key read with type-aware numeric decoding.
     auto data = readKey(keyName);
     if (!data) return std::nullopt;
     return decodeNumber(*data);
 }
 
 std::optional<double> SmcController::getCpuTemperature() {
-    // 1. TARGET the Intel PECI Package sensor first (matches the Stats app EXACTLY)
+    // [NOTE] TCXC is the preferred CPU temperature key; TC0D is a fallback on some Macs.
     auto data = readKey("TCXC");
     if (!data) {
-        // 2. FALLBACK to the CPU Diode if PECI fails 
         data = readKey("TC0D");
         if (!data) return std::nullopt;
     }
-    // 3. DECODE the SP78 formatted temperature data
     int16_t val = (data->bytes[0] << 8) | data->bytes[1];
+    // [ADD] CPU temperature bytes use a signed big-endian fixed-point value with 8 fractional bits.
     return val / 256.0;
 }
 
 std::optional<int> SmcController::getFanSpeed(int fanIndex) {
+    // [NOTE] Fan actual speed keys follow the pattern F0Ac, F1Ac, and so on.
     auto value = readNumber("F" + std::to_string(fanIndex) + "Ac");
     if (!value) return std::nullopt;
     return static_cast<int>(*value + 0.5);
 }
 
 int SmcController::getFanCount() {
+    // [ADD] FNum reports the fan count when available; two is the compatibility fallback.
     auto n = readNumber("FNum");
     return n ? static_cast<int>(*n) : 2;
 }
 
-// Fans ignore target-RPM writes unless they are in MANUAL mode.
-//  - Newer Macs: per-fan mode key F<n>Md (0 = auto, 1 = manual)
-//  - Older Intel Macs: global bitmask "FS! " (bit n = fan n forced)
 bool SmcController::setFanManualMode(int fanIndex, bool manual) {
     const std::string modeKey = "F" + std::to_string(fanIndex) + "Md";
 
+    // [NOTE] Modern Macs commonly expose one mode key per fan.
     if (auto info = readKey(modeKey)) {
         SmcKeyData in{};
         in.dataSize = info->dataSize;
@@ -245,16 +400,21 @@ bool SmcController::setFanManualMode(int fanIndex, bool manual) {
         return writeKey(modeKey, in);
     }
 
+    // [CHANGE] Inside SmcController::setFanManualMode():
     if (auto info = readKey("FS! ")) {
         uint16_t bits = (static_cast<uint16_t>(info->bytes[0]) << 8) | info->bytes[1];
-        if (manual) bits |= static_cast<uint16_t>(1u << fanIndex);
-        else        bits &= static_cast<uint16_t>(~(1u << fanIndex));
+        uint16_t nextBits = manual
+            ? static_cast<uint16_t>(bits | (1u << fanIndex))
+            : static_cast<uint16_t>(bits & ~(1u << fanIndex));
+
+        // [ADD] Avoid unnecessary SMC writes when the fan is already in Auto/Manual mode.
+        if (nextBits == bits) return true;
 
         SmcKeyData in{};
         in.dataSize = info->dataSize;
         in.dataType = info->dataType;
-        in.bytes[0] = (bits >> 8) & 0xFF;
-        in.bytes[1] = bits & 0xFF;
+        in.bytes[0] = (nextBits >> 8) & 0xFF;
+        in.bytes[1] = nextBits & 0xFF;
         return writeKey("FS! ", in);
     }
 
@@ -268,32 +428,31 @@ bool SmcController::releaseFanControl(int fanIndex) {
 }
 
 bool SmcController::setFanSpeed(int fanIndex, int targetRpm) {
+    // [ADD] This routine reads limits, enables manual fan control, and then writes the target RPM.
     const std::string idx = std::to_string(fanIndex);
     const std::string targetKey = "F" + idx + "Tg";
 
-    // Learn the REAL type of the target key (fpe2 on older Macs, flt on newer ones).
     auto info = readKey(targetKey);
     if (!info) {
         std::cerr << "[SMC] Cannot read " << targetKey << " - fan " << fanIndex << " not controllable.\n";
         return false;
     }
 
-    // Respect the hardware's own limits.
     if (auto mn = readNumber("F" + idx + "Mn")) targetRpm = std::max(targetRpm, static_cast<int>(*mn));
     if (auto mx = readNumber("F" + idx + "Mx")) targetRpm = std::min(targetRpm, static_cast<int>(*mx));
+    // [NOTE] Clamping prevents an out-of-range target while preserving the existing control sequence.
 
-    // Step 1: take manual control. Without this the SMC ignores the target.
     if (!setFanManualMode(fanIndex, true)) {
         std::cerr << "[SMC] Could not switch fan " << fanIndex << " to manual mode.\n";
         return false;
     }
 
-    // Step 2: encode the RPM in the key's real format.
     SmcKeyData in{};
     in.dataSize = info->dataSize;
     in.dataType = info->dataType;
 
     if (info->dataType == kTypeFpe2) {
+        // [ADD] fpe2 encodes RPM by multiplying the integer target by 4.
         uint16_t raw = static_cast<uint16_t>(targetRpm * 4);
         in.bytes[0] = (raw >> 8) & 0xFF;
         in.bytes[1] = raw & 0xFF;
@@ -309,6 +468,7 @@ bool SmcController::setFanSpeed(int fanIndex, int targetRpm) {
 }
 
 void SmcController::dumpFanKeys() {
+    // [ADD] This diagnostic method prints raw key metadata and bytes to help identify supported fan keys.
     std::cout << "[SMC] ---- fan key dump ----\n";
     for (const char* k : {"FNum", "FS! ", "F0Md", "F0Mn", "F0Mx", "F0Tg", "F0Ac", "F1Md", "F1Tg", "F1Ac"}) {
         auto d = readKey(k);

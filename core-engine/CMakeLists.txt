@@ -1,12 +1,7 @@
-# folder location: core-engine/CMakeLists.txt
 set(TARGET_NAME MacMSD)
 
-# I LOCATE essential macOS system frameworks for LOW-LEVEL hardware access.
-find_library(IOKIT_FW IOKit REQUIRED)
-find_library(FOUNDATION_FW Foundation REQUIRED)
-find_library(COREFOUNDATION_FW CoreFoundation REQUIRED)
-
-# DEFINE the C++ EXECUTABLE (I list the source files I will BUILD next).
+# Build the core engine as a console executable named MacMSD.
+# The following source files contain the main entry point and all engine subsystems.
 add_executable(${TARGET_NAME}
     src/main.cpp
     src/system/smc_controller.cpp
@@ -17,14 +12,13 @@ add_executable(${TARGET_NAME}
     src/ipc/websocket_server.cpp
 )
 
-# SETS the base include path, so `#include "system/smc_controller.hpp"` WORKS NATIVELY.
+# Allow source files to include headers using paths relative to core-engine/include.
 target_include_directories(${TARGET_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
-# LINK ALL dependencies to the DAEMON.
+# Link JSON parsing, WebSocket support, and libraries selected by the root CMakeLists.txt
+# for the current platform (for example, Windows sockets and Apple system frameworks).
 target_link_libraries(${TARGET_NAME} PRIVATE
     nlohmann_json::nlohmann_json
     ixwebsocket
-    ${IOKIT_FW}
-    ${FOUNDATION_FW}
-    ${COREFOUNDATION_FW}
+    ${PLATFORM_LIBS}
 )

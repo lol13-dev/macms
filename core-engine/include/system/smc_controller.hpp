@@ -5,14 +5,22 @@
 #include <optional>
 #include <array>
 #include <cstdint>
-#include <IOKit/IOKitLib.h>
+
+#ifdef __APPLE__
+    #include <IOKit/IOKitLib.h>
+#elif defined(_WIN32)
+    #ifndef WIN32_LEAN_AND_MEAN
+        #define WIN32_LEAN_AND_MEAN
+    #endif
+    #include <windows.h>
+#endif
 
 namespace macms::system {
 
-// APPLE'S SMC uses 4-byte character arrays to IDENTIFY HARDWARE KEYS (e.g., "F0Tg")
+// [NOTE] Apple SMC keys are identified by fixed 4-byte FourCC-style names such as "F0Tg".
 using SMCKey = std::array<char, 4>;
 
-// STANDARD struct required for PASSING DATA in and out of the AppleSMC driver.
+// [ADD] This structure carries an SMC value's byte size, type code, attributes, and payload.
 struct SmcKeyData {
     uint32_t dataSize;
     uint32_t dataType;
@@ -22,39 +30,52 @@ struct SmcKeyData {
 
 class SmcController {
 public:
+    // [ADD] Construction opens the platform SMC connection; destruction closes and restores fan state.
     SmcController();
     ~SmcController();
 
-    // SAFELY prevent copying TO PROTECT the kernel CONNECTION.
+    // [NOTE] Copying is disabled because multiple objects could otherwise share or duplicate a kernel/device handle.
     SmcController(const SmcController&) = delete;
     SmcController& operator=(const SmcController&) = delete;
 
+    // [ADD] Connect and disconnect manage the platform-specific AppleSMC connection handle.
     bool connect();
     void disconnect();
 
-    // readKey() now returns the key's real dataSize/dataType along with the bytes.
+    // [NOTE] readKey returns metadata and raw bytes; writeKey sends them back to the SMC.
     std::optional<SmcKeyData> readKey(std::string_view keyName);
     bool writeKey(std::string_view keyName, const SmcKeyData& data);
 
+    // [ADD] These convenience methods provide decoded temperature and fan-speed values.
     std::optional<double> getCpuTemperature();
     std::optional<int> getFanSpeed(int fanIndex);
 
-    // Switches the fan to MANUAL mode, then writes the target RPM.
-    // Returns false (and logs why) if the SMC rejected any step.
+    // [NOTE] setFanSpeed switches the fan to manual mode, writes the target RPM, and returns false on failure.
     bool setFanSpeed(int fanIndex, int targetRpm);
 
-    // Hands the fan back to macOS (AUTOMATIC mode).
+    // [NOTE] releaseFanControl returns the selected fan to automatic platform control.
     bool releaseFanControl(int fanIndex);
 
-    // Prints type/size/bytes of every fan-related key. Use it to see what YOUR Mac supports.
+    // [ADD] dumpFanKeys is a diagnostic helper that prints key metadata and raw bytes.
     void dumpFanKeys();
 
 private:
-    io_connect_t connection_{0}; // HANDLE for THE KERNEL CONNECTION.
+#ifdef __APPLE__
+    // [NOTE] On macOS this handle represents the IOKit connection to AppleSMC.
+    io_connect_t connection_{0};
+#elif defined(_WIN32)
+    // [NOTE] On Windows this handle represents the opened \\.\AppleSMC device.
+    HANDLE connection_{INVALID_HANDLE_VALUE};
+#endif
 
+    // [ADD] isConnected checks whether the platform-specific connection handle is active.
+    bool isConnected() const;
+
+    // [NOTE] makeKey creates a 4-byte key; callSmc performs one SMC command through the platform driver.
     static SMCKey makeKey(std::string_view str);
     bool callSmc(uint8_t command, const SMCKey& key, const SmcKeyData& input, SmcKeyData& output);
 
+    // [ADD] Internal helpers decode numeric values and manage per-fan or shared fan mode controls.
     std::optional<double> readNumber(std::string_view keyName);
     bool setFanManualMode(int fanIndex, bool manual);
     int getFanCount();
