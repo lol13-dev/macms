@@ -1,5 +1,6 @@
-# C++ Build Artifacts.
+﻿# C++ Build Artifacts.
 build/
+build-win/
 core-engine/build/
 compile_commands.json
 # Sometimes I DISABLED IT temporary DUE TO FALSE ERROR

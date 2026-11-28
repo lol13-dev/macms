@@ -13,13 +13,44 @@
 #include <csignal>
 #include <atomic>
 
+// [ADDED] Include Windows APIs for UTF-8 console output and window-close signal handling.
+#ifdef _WIN32
+    #ifndef WIN32_LEAN_AND_MEAN
+        #define WIN32_LEAN_AND_MEAN
+    #endif
+    #include <windows.h>
+#endif
+
 std::atomic<bool> g_running{true};
 
 void signalHandler(int /*signum*/) {
     g_running = false;
 }
 
+// [ADDED] Handle Windows Ctrl+C, Ctrl+Break, and terminal window close ('X' button)
+// so the main loop exits cleanly and releases manual SMC fan control before termination.
+#ifdef _WIN32
+BOOL WINAPI winConsoleHandler(DWORD ctrlType) {
+    switch (ctrlType) {
+        case CTRL_C_EVENT:
+        case CTRL_BREAK_EVENT:
+        case CTRL_CLOSE_EVENT:
+        case CTRL_SHUTDOWN_EVENT:
+            g_running = false;
+            return TRUE;
+        default:
+            return FALSE;
+    }
+}
+#endif
+
 int main() {
+    // [ADDED] Enable UTF-8 console output on Windows so 'MacMSDα' and '°C' print cleanly.
+#ifdef _WIN32
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCtrlHandler(winConsoleHandler, TRUE);
+#endif
+
     // CATCH CTRL + C to cleanly SHUTDOWN the daemon.
     std::signal(SIGINT, signalHandler);
     std::signal(SIGTERM, signalHandler);
@@ -29,14 +60,19 @@ int main() {
     // Step 1: INITIALIZE the Low-Level driver.
     macms::system::SmcController smc;
     if (!smc.connect()) {
+        // [ADDED] Show platform-accurate privilege instructions (Administrator on Windows, sudo on macOS).
+#ifdef _WIN32
+        std::cerr << "[MacMSDα] FATAL_ERROR: Failed to connect to \\\\.\\AppleSMC! (Are you running as Administrator?)\n";
+#else
         std::cerr << "[MacMSDα] FATAL_ERROR: Failed to connect to AppleSMC! (ARE YOU RUNNING WITH sudo ?)\n";
+#endif
         return 1;
     }
 
     // Step 2: INITIALIZE Managers.
     macms::system::ThermalMonitor thermal(smc);
     macms::system::PowerMonitor power;
-    macms::system::ProfileManager profile(smc, thermal,power);
+    macms::system::ProfileManager profile(smc, thermal, power);
     macms::timer::SessionTracker tracker(profile);
     macms::ipc::WebSocketDaemon wsDaemon(thermal, profile, tracker);
 
@@ -71,7 +107,7 @@ int main() {
 
     std::cout << "\n[MacMSDα] Shutting down cleanly...\n";
 
-    // [!] Failsafe Warning: Safely restore SMC fans to automatic macOS thermal management 
+    // [!] Failsafe Warning: Safely restore SMC fans to automatic thermal management 
     // before daemon exit so fans are never left stuck in manual RPM mode.
     profile.setProfile(macms::system::PowerProfile::Normal);
     

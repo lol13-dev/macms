@@ -4,11 +4,13 @@
 
 namespace macms::system {
 
-ProfileManager::ProfileManager(SmcController& smc, ThermalMonitor& thermal, PowerMonitor& power) 
-        : smc_(smc), thermal_(thermal), power_(power), currentProfile_(PowerProfile::Normal), overloadTicks_(0) {}
+// [CHANGE] Match the declaration order in profile_manager.hpp (overloadTicks_ before currentProfile_).
+ProfileManager::ProfileManager(SmcController& smc, ThermalMonitor& thermal, PowerMonitor& power)
+    : smc_(smc), thermal_(thermal), power_(power), overloadTicks_(0), currentProfile_(PowerProfile::Normal) {}
 
 bool ProfileManager::setProfile(PowerProfile profile, bool /*isCharging*/) {
     // NEW, Safety lock: Prevent Maximum mode from draining the battery and overheating
+    // [ADDED] Uses PowerMonitor::isOnACPower() (Win32 GetSystemPowerStatus on Windows).
     if (profile == PowerProfile::Maximum && !power_.isOnACPower()) {
         std::cerr << "[ProfileManager_WARNING] Cannot engage Maximum profile while on battery power.\n";
         return false;
@@ -50,6 +52,7 @@ void ProfileManager::enforceProfileRules() {
     // setFanSpeed() switches the fan to manual mode itself and logs any SMC failure.
     switch (currentProfile_) {
         case PowerProfile::Silent:
+            // [ADDED] Note: On A1707, SmcController clamps 2000 RPM up to hardware minimum F0Mn (2160 RPM).
             if (thermals->cpuTemp < 75.0) {
                 smc_.setFanSpeed(0, 2000);
                 smc_.setFanSpeed(1, 2000);
@@ -61,12 +64,14 @@ void ProfileManager::enforceProfileRules() {
 
         case PowerProfile::Normal:
             // FIXED: writing 0 to the target does NOT release control.
-            // Switch the fans back to AUTOMATIC mode so macOS drives them again.
+            // Switch the fans back to AUTOMATIC mode so the T1 SMC drives them again.
+            // [ADDED] Skips redundant SMC writes if FS! bitmask is already 0 (Auto).
             smc_.releaseFanControl(0);
             smc_.releaseFanControl(1);
             break;
 
         case PowerProfile::Performance:
+            // [ADDED] Engages 4800 RPM cooling under load (> 60°C); restores Auto mode when cool.
             if (thermals->cpuTemp > 60.0) {
                 smc_.setFanSpeed(0, 4800);
                 smc_.setFanSpeed(1, 4800);
@@ -79,6 +84,7 @@ void ProfileManager::enforceProfileRules() {
             break;
 
         case PowerProfile::Maximum:
+            // [ADDED] Locks both fans near the A1707 hardware ceiling (F0Mx = 5927 RPM).
             smc_.setFanSpeed(0, 5900);
             smc_.setFanSpeed(1, 5900);
             break;
@@ -91,7 +97,7 @@ void ProfileManager::checkEmergencyFailsafe() {
     // [!!] Failsafe 1: Sensor DISCONNECT (Hardware Read Failure)
     if (!dataOpt) {
         if (currentProfile_ != PowerProfile::Normal) {
-            std::cerr << "[!!] FAILSAFE_INITIATED: SMC Sensors disconnected! Reverting to macOS Normal control.\n";
+            std::cerr << "[!!] FAILSAFE_INITIATED: SMC Sensors disconnected! Reverting to Normal control.\n";
             setProfile(PowerProfile::Normal);
         }
         return;
